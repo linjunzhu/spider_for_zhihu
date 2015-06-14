@@ -5,22 +5,79 @@ import urllib2
 import re
 import pdb
 import os
-import ssl
+import cookielib
+from PIL import Image
+import StringIO
 
-# V0.1
-# 抓取某个人的所有回答存入文本
+# V0.2
+# 1、抓取某个人的所有回答存入文本
+# 2、抓取某个答案下的回答点赞用户情况（四无)
 
 class Zhihu:
 
-    def __init__(self, url):
-        self.url = url
+    def __init__(self):
+        self.cookies = cookielib.CookieJar()
+        self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cookies))
+        self.headers = {
+            'User-Agent' : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.124 Safari/537.36',
+            'Referer' : 'http://www.zhihu.com/',
+            'Origin' : 'http://www.zhihu.com/'
+        }
 
-    def get_page(self, url):
+    # 登录
+    def login(self, email, password):
+        url = 'http://www.zhihu.com/login'
+        wrong_data = urllib.urlencode({'email': 'wrong_email@gmail.com'})
+        # 发送错误登录请求，以便获取验证码
+        content = self.get_page(url, wrong_data)
+        # 如果结果页能够提取验证码，说明登录失败
+        verify_code = self.get_verify_code(content)
+        # 获取验证码以及CSRF值重新登录
+        if verify_code:
+            csrf_token = self.get_csrf_token(content)
+            data = urllib.urlencode({
+                'email' : email,
+                'password' : password,
+                'rememberme' : 'y',
+                '_xsrf' : csrf_token,
+                'captcha' : verify_code
+            })
+            content = self.get_page(url, data)
+
+    def get_csrf_token(self, content):
+        pattern = re.compile('<meta content="(.*?)" name="csrf-token"')
+        item = re.search(pattern, content)
+        if item:
+            csrf_token = item.group(1).strip()
+        else:
+            csrf_token = ""
+
+    def get_verify_code(self, content):
+        # 提取内容页的验证码图片地址
+        pattern = re.compile(r'<img class="js-captcha-img".*?src="(.*?)" />', re.S)
+        item = re.search(pattern, content)
+        if item:
+            content = self.get_page("http://www.zhihu.com%s" % item.group(1).strip(), binary = True)
+            img = Image.open(StringIO.StringIO(content));
+            img.show()
+            code = raw_input(u'请输入验证码：'.encode('utf-8'))
+            return code
+        else:
+            return ""
+
+    def get_page(self, url, data="", binary=False):
         try:
-            request = urllib2.Request(url)
-            response = urllib2.urlopen(request)
+            if data:
+                request = urllib2.Request(url, headers = self.headers, data = data)
+            else:
+                request = urllib2.Request(url, headers = self.headers)
+            response = self.opener.open(request)
             content = response.read()
-            return content.decode('utf-8')
+            if binary:
+                return content
+            else:
+                return content.decode('utf-8')
+
         except urllib2.URLError, error:
             if hasattr(error, 'reason'):
                 print('Something is wrong :' + error.reason)
@@ -41,14 +98,14 @@ class Zhihu:
         for answer in answers:
             file.write((u"\nLink: %s \nQuestion: %s \nVotes: %s \nAnswer: %s" % (answer[0],answer[1],answer[2],answer[3])).encode('utf-8'))
 
-    def get_answers(self, content):
+    def get_answers(self, content, url):
         page = 1
         enable = True
         answers = []
         # 获取每一个的答案
         while enable:
             print("page:%d" % page)
-            url = self.url + "/answers?page=" + str(page)
+            url = url + "/answers?page=" + str(page)
             content = self.get_page(url)
             pattern = re.compile(r'<div class="zm-item".*?<a.*?href="(.*?)">(.*?)</a>.*?</h2>' +
                                     r'.*?<a.*?class="zm-item-vote-count.*?>(.*?)</a>.*?<div class=' +
@@ -63,12 +120,80 @@ class Zhihu:
 
         return answers
 
-    def start_get_answers(self):
-        content = self.get_page(self.url)
+    def start_get_answers(self, url):
+        content = self.get_page(url)
         info = self.get_user_info(content)
-        answers = self.get_answers(content)
+        answers = self.get_answers(content, url)
         self.save_for_file(info, answers)
 
-url = raw_input(u'请输入要抓取的人的主页:'.encode('utf-8'))
-zhihu = Zhihu(url)
-zhihu.start_get_answers()
+
+    # 分析每个答案的点赞者,返回四无用户比例
+    def analyze_voters(self, answer_id, count_agree):
+        voter_url = "http://www.zhihu.com/answer/%s/voters_profile" % answer_id
+        # 四无用户
+        count_no_identity = 0
+        voters_pattern = re.compile(r'<div class=\\"zm-profile-card[^>]*>.*?<ul class=\\"status\\">.*?<li>.*?<span>(\d).*?</span>' +
+                                    r'.*?<li>.*?<span>(\d).*?</span>.*?<li.*?<a[^>]*>(\d).*?</a>.*?<li.*?<a[^>]*>(\d).*?</a>', re.S)
+        next_agree_pattern = re.compile(r'{"paging":.*?"next": "(.*?)"}', re.S)
+        enable = True
+        while enable:
+            content = self.get_page(voter_url)
+            items = re.findall(voters_pattern, content)
+            for item in items:
+                if int(item[0]) == 0 and int(item[1]) == 0 and int(item[2]) == 0 and int(item[3]) == 0:
+                    count_no_identity += 1
+            # 判断是否还有下一页
+            items = re.search(next_agree_pattern, content)
+            # 下一页点赞情况
+            next_agree = items.group(1)
+            if next_agree:
+                voter_url = "http://www.zhihu.com" + next_agree
+            else:
+                enable = False
+        return float(count_no_identity)/float(count_agree)
+
+    # 分析每个答案
+    def anaylyze_answers(self, content):
+        # 0 为答案ID 1 为总赞数 2 为答主
+        pattern = re.compile(r'<div tabindex.*?class="zm-item-answer.*?data-aid="(.*?)"[^>]*>.*?<button class="up.*?class="count">(.*?)</span>' +
+                                r'.*?<h3 class="zm-item-answer-author-wrap">(?:(?:\n\n\n<a[^>]*>.*?</a>.*?<a[^>]*>(.*?)</a>(?:(?!</h3>).)*)|((?:(?!</h3>).)*))</h3>', re.S)
+        items = re.findall(pattern, content)
+        results = []
+        # 如果是为匿名用户，则值在item[3]
+        for item in items:
+            print(u"开始分析 %s ..." % self.show_author(item[2], item[3])
+            ratio = 0
+            if int(item[1]) > 0:
+                ratio = self.analyze_voters(item[0], item[1])
+            results.append([self.show_author(item[2], item[3]), item[1], "%d%%" % int(ratio * 100)])
+        return results
+
+    def show_author(self, normal, anonymity):
+        value =  normal if normal else anonymity
+        return value
+
+    def save_for_file_by_analyze_question(self, filename, results):
+        file = open("%s.txt" % filename, "w+")
+        for result in results:
+            file.write((u"回答者: %s 总赞数: %s 点赞中四无用户比例: %s\n" % (result[0],result[1],result[2])).encode('utf-8'))
+
+    def start_analyze_question(self, url, email, password):
+        self.login(email, password)
+        content = self.get_page(url)
+        results = self.anaylyze_answers(content)
+        self.save_for_file_by_analyze_question('你妹', results)
+
+select = raw_input(u'请选择功能:\n1: 抓取知乎人的信息\n2: 分析某个问题\n'.encode('utf-8'))
+zhihu = Zhihu()
+
+if int(select) == 1:
+    url = raw_input(u'请输入要抓取的人的主页:'.encode('utf-8'))
+    zhihu.start_get_answers(url)
+elif int(select) == 2:
+    url = raw_input(u'请输入要抓取的问题地址:'.encode('utf-8'))
+    email = raw_input(u'请输入账号:'.encode('utf-8'))
+    password = raw_input(u'请输入密码:'.encode('utf-8'))
+    zhihu.start_analyze_question(url, email, password)
+
+
+
