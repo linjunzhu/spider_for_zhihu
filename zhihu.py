@@ -24,25 +24,37 @@ class Zhihu:
             'Origin' : 'http://www.zhihu.com/'
         }
 
+    def input_identity(self):
+        email = raw_input(u'请输入账号:'.encode('utf-8'))
+        password = raw_input(u'请输入密码:'.encode('utf-8'))
+        return {'email' : email, 'password' : password }
+
     # 登录
-    def login(self, email, password):
+    def login(self):
         url = 'http://www.zhihu.com/login'
-        wrong_data = urllib.urlencode({'email': 'wrong_email@gmail.com'})
         # 发送错误登录请求，以便获取验证码
+        wrong_data = urllib.urlencode({'email': 'wrong_email@gmail.com'})
         content = self.get_page(url, wrong_data)
-        # 如果结果页能够提取验证码，说明登录失败
-        verify_code = self.get_verify_code(content)
-        # 获取验证码以及CSRF值重新登录
-        if verify_code:
-            csrf_token = self.get_csrf_token(content)
-            data = urllib.urlencode({
-                'email' : email,
-                'password' : password,
-                'rememberme' : 'y',
-                '_xsrf' : csrf_token,
-                'captcha' : verify_code
-            })
-            content = self.get_page(url, data)
+        status = False
+        while not status:
+            status = self.judge_login(content)
+            if status:
+                print u'登录成功'
+            else:
+                print u'未登录 or 登录失败'
+                identity = self.input_identity()
+                # 获取验证码以及CSRF值重新登录
+                verify_code = self.get_verify_code(content)
+                csrf_token = self.get_csrf_token(content)
+                data = urllib.urlencode({
+                    'email' : identity['email'],
+                    'password' : identity['password'],
+                    'rememberme' : 'y',
+                    '_xsrf' : csrf_token,
+                    'captcha' : verify_code
+                })
+                content = self.get_page(url, data)
+
 
     def get_csrf_token(self, content):
         pattern = re.compile('<meta content="(.*?)" name="csrf-token"')
@@ -51,6 +63,14 @@ class Zhihu:
             csrf_token = item.group(1).strip()
         else:
             csrf_token = ""
+
+    def judge_login(self, content):
+        pattern = re.compile(r'<button class="sign-button" type="submit">.*?</button>', re.S)
+        item = re.search(pattern, content)
+        if item:
+            return False
+        else:
+            return True
 
     def get_verify_code(self, content):
         # 提取内容页的验证码图片地址
@@ -65,8 +85,10 @@ class Zhihu:
         else:
             return ""
 
+    # 获取页面
     def get_page(self, url, data="", binary=False):
         try:
+            print url
             if data:
                 request = urllib2.Request(url, headers = self.headers, data = data)
             else:
@@ -85,19 +107,23 @@ class Zhihu:
                 print('Something is wrong : ' + error.code)
             return None
 
+    # 获取用户信息
     def get_user_info(self, content):
         pattern = re.compile(r'<div class="title-section ellipsis">.*?<span class="name">(.*?)</span>.*?' +
-                                r'<span class="bio.*?>(.*?)</span>.*?<span class="zm-profile-header-user-agree"' +
-                                r'.*?<strong>(.*?)</strong>.*?<span class="zm-profile-header-user-thanks".*?<strong>(.*?)</strong>', re.S)
+                                r'<span class="zm-profile-header-user-agree".*?<strong>(.*?)</strong>.*?' +
+                                r'<span class="zm-profile-header-user-thanks".*?<strong>(.*?)</strong>', re.S)
         result = re.search(pattern, content)
+        # pdb.set_trace()
         return result
 
+    # 保存成文本
     def save_for_file(self, info, answers):
         file = open("%s.txt" % info.group(1), "w+")
-        file.write((u"Name: %s\nBio: %s \nUser_agrees: %s\nUser_thanks: %s" % (info.group(1),info.group(2),info.group(3),info.group(4))).encode('utf-8'))
+        file.write((u"Name: %s \nUser_agrees: %s\nUser_thanks: %s\n" % (info.group(1),info.group(2),info.group(3))).encode('utf-8'))
         for answer in answers:
             file.write((u"\nLink: %s \nQuestion: %s \nVotes: %s \nAnswer: %s" % (answer[0],answer[1],answer[2],answer[3])).encode('utf-8'))
 
+    # 获取所有答案
     def get_answers(self, content, url):
         page = 1
         enable = True
@@ -105,8 +131,8 @@ class Zhihu:
         # 获取每一个的答案
         while enable:
             print("page:%d" % page)
-            url = url + "/answers?page=" + str(page)
-            content = self.get_page(url)
+            answer_url = url + "/answers?page=" + str(page)
+            content = self.get_page(answer_url)
             pattern = re.compile(r'<div class="zm-item".*?<a.*?href="(.*?)">(.*?)</a>.*?</h2>' +
                                     r'.*?<a.*?class="zm-item-vote-count.*?>(.*?)</a>.*?<div class=' +
                                     r'"zh-summary.*?>(.*?)</div>', re.S)
@@ -152,6 +178,7 @@ class Zhihu:
                 enable = False
         return float(count_no_identity)/float(count_agree)
 
+
     # 分析每个答案
     def anaylyze_answers(self, content):
         # 0 为答案ID 1 为总赞数 2 为答主
@@ -161,27 +188,29 @@ class Zhihu:
         results = []
         # 如果是为匿名用户，则值在item[3]
         for item in items:
-            print(u"开始分析 %s ..." % self.show_author(item[2], item[3])
+            print(u"开始分析 %s ..." % self.show_author(item[2], item[3]))
             ratio = 0
             if int(item[1]) > 0:
                 ratio = self.analyze_voters(item[0], item[1])
             results.append([self.show_author(item[2], item[3]), item[1], "%d%%" % int(ratio * 100)])
         return results
 
+    # 返回作者
     def show_author(self, normal, anonymity):
         value =  normal if normal else anonymity
         return value
 
+    # 将分析的情况保存成文本
     def save_for_file_by_analyze_question(self, filename, results):
         file = open("%s.txt" % filename, "w+")
         for result in results:
             file.write((u"回答者: %s 总赞数: %s 点赞中四无用户比例: %s\n" % (result[0],result[1],result[2])).encode('utf-8'))
 
-    def start_analyze_question(self, url, email, password):
-        self.login(email, password)
+    def start_analyze_question(self, url, filename):
+        self.login()
         content = self.get_page(url)
         results = self.anaylyze_answers(content)
-        self.save_for_file_by_analyze_question('你妹', results)
+        self.save_for_file_by_analyze_question(filename, results)
 
 select = raw_input(u'请选择功能:\n1: 抓取知乎人的信息\n2: 分析某个问题\n'.encode('utf-8'))
 zhihu = Zhihu()
@@ -191,9 +220,5 @@ if int(select) == 1:
     zhihu.start_get_answers(url)
 elif int(select) == 2:
     url = raw_input(u'请输入要抓取的问题地址:'.encode('utf-8'))
-    email = raw_input(u'请输入账号:'.encode('utf-8'))
-    password = raw_input(u'请输入密码:'.encode('utf-8'))
-    zhihu.start_analyze_question(url, email, password)
-
-
-
+    filename = raw_input(u'请输入要保存的文本名:'.encode('utf-8'))
+    zhihu.start_analyze_question(url, filename)
