@@ -31,10 +31,9 @@ class Zhihu:
 
     # 登录
     def login(self):
-        url = 'http://www.zhihu.com/login'
-        # 发送错误登录请求，以便获取验证码
-        wrong_data = urllib.urlencode({'email': 'wrong_email@gmail.com'})
-        content = self.get_page(url, wrong_data)
+        url = 'http://www.zhihu.com/login/email'
+        base_url = "http://www.zhihu.com/#signin"
+        content = "errcode"
         status = False
         while not status:
             status = self.judge_login(content)
@@ -43,6 +42,7 @@ class Zhihu:
             else:
                 print u'未登录 or 登录失败'
                 identity = self.input_identity()
+                content = self.get_page(base_url)
                 # 获取验证码以及CSRF值重新登录
                 verify_code = self.get_verify_code(content)
                 csrf_token = self.get_csrf_token(content)
@@ -54,6 +54,7 @@ class Zhihu:
                     'captcha' : verify_code
                 })
                 content = self.get_page(url, data)
+                print content
 
 
     def get_csrf_token(self, content):
@@ -65,7 +66,7 @@ class Zhihu:
             csrf_token = ""
 
     def judge_login(self, content):
-        pattern = re.compile(r'<button class="sign-button" type="submit">.*?</button>', re.S)
+        pattern = re.compile(r'errcode', re.S)
         item = re.search(pattern, content)
         if item:
             return False
@@ -74,10 +75,10 @@ class Zhihu:
 
     def get_verify_code(self, content):
         # 提取内容页的验证码图片地址
-        pattern = re.compile(r'<img class="js-captcha-img".*?src="(.*?)" />', re.S)
+        pattern = re.compile(r'<img class="js-captcha-img".*?src="(.*?)".*? />', re.S)
         item = re.search(pattern, content)
         if item:
-            content = self.get_page("http://www.zhihu.com%s" % item.group(1).strip(), binary = True)
+            content = self.get_page(item.group(1).strip(), binary = True)
             img = Image.open(StringIO.StringIO(content));
             img.show()
             code = raw_input(u'请输入验证码：'.encode('utf-8'))
@@ -105,7 +106,7 @@ class Zhihu:
                 print('Something is wrong :' + error.reason)
             elif hasattr(error, 'code'):
                 print('Something is wrong : ' + error.code)
-            return None
+            exit()
 
     # 获取用户信息
     def get_user_info(self, content):
